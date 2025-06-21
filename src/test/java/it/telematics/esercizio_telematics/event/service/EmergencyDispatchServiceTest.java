@@ -4,6 +4,8 @@ import it.telematics.esercizio_telematics.event.dto.CrashReportPayload;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 import java.util.Map;
@@ -16,46 +18,62 @@ class EmergencyDispatchServiceTest {
 
     @BeforeEach
     void setUp() {
-        // Creiamo una nuova istanza pulita prima di ogni test
+        // Viene eseguito prima di ogni test, garantendo che ogni test sia indipendente
         dispatchService = new EmergencyDispatchService();
     }
 
     @Test
-    @DisplayName("Dovrebbe restituire 3 azioni per un evento CRITICAL")
-    void shouldReturnThreeActionsForCriticalEvent() {
-        // 1. ARRANGE (Prepara i dati di input)
-        CrashReportPayload criticalEvent = new CrashReportPayload();
-        criticalEvent.setSeverity("CRITICAL");
-        criticalEvent.setVehicleLicensePlate("TEST-001");
-        criticalEvent.setLocation(Map.of("latitude", 10.0, "longitude", 20.0));
+    @DisplayName("Dato LOW, deve restituire una sola azione: VOIP_CALL")
+    void givenLowSeverity_whenDetermineActions_thenReturnsOneAction() {
+        // ARRANGE: Prepara i dati di input
+        CrashReportPayload event = new CrashReportPayload();
+        event.setSeverity("LOW");
+        event.setVehicleLicensePlate("TEST-LOW");
 
-        // 2. ACT (Esegui il metodo da testare)
-        List<Map<String, Object>> actions = dispatchService.determineAndExecuteActions(criticalEvent);
+        // ACT: Esegui il metodo da testare
+        List<Map<String, Object>> actions = dispatchService.determineAndExecuteActions(event);
 
-        // 3. ASSERT (Verifica i risultati)
-        assertNotNull(actions);
-        assertEquals(3, actions.size(), "Ci dovrebbero essere 3 azioni per un evento critico");
-
-        // Verifica che i tipi di azione siano corretti
-        assertTrue(actions.stream().anyMatch(action -> "VOIP_CALL".equals(action.get("actionType"))));
-        assertTrue(actions.stream().anyMatch(action -> "DISPATCH_AMBULANCE".equals(action.get("actionType"))));
-        assertTrue(actions.stream().anyMatch(action -> "DISPATCH_TOW_TRUCK".equals(action.get("actionType"))));
+        // ASSERT: Verifica i risultati
+        assertEquals(1, actions.size(), "Dovrebbe esserci una sola azione per severità LOW");
+        assertEquals("VOIP_CALL", actions.get(0).get("actionType"));
     }
 
     @Test
-    @DisplayName("Dovrebbe restituire 1 azione per un evento LOW")
-    void shouldReturnOneActionForLowEvent() {
+    @DisplayName("Dato MEDIUM, deve restituire due azioni: VOIP e Ambulanza")
+    void givenMediumSeverity_whenDetermineActions_thenReturnsTwoActions() {
         // ARRANGE
-        CrashReportPayload lowEvent = new CrashReportPayload();
-        lowEvent.setSeverity("LOW");
-        lowEvent.setVehicleLicensePlate("TEST-002");
+        CrashReportPayload event = new CrashReportPayload();
+        event.setSeverity("MEDIUM");
+        event.setVehicleLicensePlate("TEST-MEDIUM");
+        event.setLocation(Map.of("latitude", 1.0, "longitude", 1.0)); // Necessario per l'ambulanza
 
         // ACT
-        List<Map<String, Object>> actions = dispatchService.determineAndExecuteActions(lowEvent);
+        List<Map<String, Object>> actions = dispatchService.determineAndExecuteActions(event);
 
         // ASSERT
-        assertNotNull(actions);
-        assertEquals(1, actions.size());
-        assertEquals("VOIP_CALL", actions.get(0).get("actionType"));
+        assertEquals(2, actions.size(), "Dovrebbero esserci due azioni per severità MEDIUM");
+        assertTrue(actions.stream().anyMatch(a -> "VOIP_CALL".equals(a.get("actionType"))));
+        assertTrue(actions.stream().anyMatch(a -> "DISPATCH_AMBULANCE".equals(a.get("actionType"))));
+    }
+
+    // Usiamo un test parametrizzato per testare HIGH e CRITICAL con lo stesso codice
+    @ParameterizedTest
+    @ValueSource(strings = {"HIGH", "CRITICAL"})
+    @DisplayName("Dato HIGH o CRITICAL, deve restituire tre azioni")
+    void givenHighOrCriticalSeverity_whenDetermineActions_thenReturnsThreeActions(String severity) {
+        // ARRANGE
+        CrashReportPayload event = new CrashReportPayload();
+        event.setSeverity(severity);
+        event.setVehicleLicensePlate("TEST-HIGH");
+        event.setLocation(Map.of("latitude", 1.0, "longitude", 1.0));
+
+        // ACT
+        List<Map<String, Object>> actions = dispatchService.determineAndExecuteActions(event);
+
+        // ASSERT
+        assertEquals(3, actions.size(), "Dovrebbero esserci tre azioni per severità " + severity);
+        assertTrue(actions.stream().anyMatch(a -> "VOIP_CALL".equals(a.get("actionType"))));
+        assertTrue(actions.stream().anyMatch(a -> "DISPATCH_AMBULANCE".equals(a.get("actionType"))));
+        assertTrue(actions.stream().anyMatch(a -> "DISPATCH_TOW_TRUCK".equals(a.get("actionType"))));
     }
 }
