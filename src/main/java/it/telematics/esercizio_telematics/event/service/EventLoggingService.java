@@ -1,0 +1,110 @@
+package it.telematics.esercizio_telematics.event.service;
+import it.telematics.esercizio_telematics.event.dto.EventLogRecord;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.RowMapper; // <-- Importante
+
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
+
+import java.sql.PreparedStatement;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class EventLoggingService {
+    private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
+
+    // Inietta il valore della query SQL dal file di properties
+    @Value("${logging.database.sql.insert-statement}")
+    private String insertSql;
+    @Value("${logging.database.static-user-identifier}")
+    private String staticUserIdentifier;
+    @Value("${logging.database.generated-id-column}")
+    private String generatedIdColumn;
+    @Value("${logging.database.sql.delete-statement}")
+    private String deleteSql;
+    @Value("${logging.database.sql.select-critical-statement}")
+    private String selectCriticalSql;
+
+
+    public long logRawEvent(Object payload) {
+        String jsonPayload;
+        try {
+            // 1. Serializza l'oggetto Java ricevuto in una stringa JSON
+            jsonPayload = objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            log.error("Impossibile serializzare il payload in JSON", e);
+            throw new RuntimeException("Errore di serializzazione", e);
+        }
+
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+
+        jdbcTemplate.update(connection -> {
+            // Creiamo un PreparedStatement che richiede la restituzione delle chiavi generate.
+            PreparedStatement ps = connection.prepareStatement(insertSql, new String[]{generatedIdColumn});
+            ps.setString(1, jsonPayload); // Il primo '?' è per il JSON
+            ps.setString(2, staticUserIdentifier); // Il secondo '?' è per l'utente statico
+            return ps;
+        }, keyHolder);
+
+        // Dopo l'esecuzione, recuperiamo la chiave dal KeyHolder.
+        Number generatedId = keyHolder.getKey();
+        if (generatedId == null) {
+            throw new RuntimeException("L'inserimento nel DB non ha restituito un ID.");
+        }
+
+        log.info("Payload registrato con successo. ID generato dal DB: {}", generatedId.longValue());
+
+        // Restituiamo il valore come long.
+        return generatedId.longValue();
+    }
+
+    public int deleteLogsByUser(String user) {
+        log.warn("Esecuzione operazione di eliminazione di massa per l'utente: {}", user);
+        int deletedRows = jdbcTemplate.update(deleteSql, user);
+
+        log.info("Operazione completata. Eliminate {} righe per l'utente: {}", deletedRows, user);
+        return deletedRows;
+    }
+
+    public List<EventLogRecord> findCriticalSeverityEvents() {
+        RowMapper<EventLogRecord> rowMapper = (rs, rowNum) -> {
+            EventLogRecord record = new EventLogRecord();
+            record.setId(rs.getLong("id"));
+            record.setUser(rs.getString("user"));
+
+            // Deserializza la stringa JSON in una mappa generica
+            String jsonString = rs.getString("json");
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> jsonData = objectMapper.readValue(jsonString, Map.class);
+                record.setJsonData(jsonData);
+
+                // Estrai il timestamp dall'interno del JSON, non più dalla colonna della tabella.
+                if (jsonData.containsKey("eventTimestamp")) {
+                    String timestampStr = (String) jsonData.get("eventTimestamp");
+                    record.setReceivedAt(OffsetDateTime.parse(timestampStr));
+                }
+
+            } catch (JsonProcessingException e) {
+                log.error("Impossibile deserializzare il JSON per il record con id: {}", record.getId(), e);
+                // In caso di errore, jsonData e receivedAt rimarranno null nel record di risposta.
+            }
+            return record;
+        };
+
+        log.info("Esecuzione ricerca per eventi critici...");
+        // Usa la query corretta che hai già in application.properties
+        return jdbcTemplate.query(selectCriticalSql, rowMapper);
+    }
+}
