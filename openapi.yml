@@ -1,11 +1,13 @@
 openapi: 3.0.3
 info:
-  title: API Servizio Notifica Eventi Telematici
+  title: API Gestione Eventi Telematici
   description: |-
-    Riceve, registra ed elabora eventi telematici.
-    Il servizio assembla un oggetto JSON contenitore che separa i dati di audit, il payload originale e i risultati dell'elaborazione.
-  version: 1.2.0 # Incrementiamo ancora la versione
-
+    API per ricevere, elaborare e registrare eventi telematici (es. incidenti stradali) provenienti da dispositivi.
+    Il servizio segue un'architettura di logging strutturato:
+    1. Riceve un payload di base (`CrashReportPayload`).
+    2. Arricchisce il dato con informazioni di audit (es. `receivedAt`) e di elaborazione (es. le azioni intraprese dal dispatcher di emergenza).
+    3. Salva un oggetto JSON composito e strutturato in un database per future analisi.
+  version: "1.2.0"
 servers:
   - url: http://localhost:8080/api/v1
     description: Server di sviluppo locale
@@ -15,18 +17,12 @@ paths:
     post:
       tags:
         - Event Reporting
-      summary: Registra, elabora e arricchisce un evento di incidente
+      summary: Registra un nuovo evento di incidente
       description: |-
-        Questo endpoint è il punto di ingresso principale per gli eventi.
-        Il servizio esegue il seguente flusso:
-        1. Riserva un ID univoco dal database.
-        2. Assembla un oggetto JSON "contenitore" con tre sezioni:
-           - `audit`: Contiene metadati sulla ricezione della richiesta (es. timestamp, ID del log).
-           - `originalPayload`: Contiene una copia esatta e immutabile del JSON ricevuto.
-           - `processing`: Contiene i risultati dell'elaborazione, incluse le azioni automatiche intraprese in base alla `severity`.
-        3. Salva questo oggetto contenitore nel database di log.
+        Riceve i dati di un incidente, li elabora per determinare le azioni di emergenza necessarie (es. chiamata VOIP, invio ambulanza), e salva un log completo e strutturato dell'evento e delle azioni intraprese.
+        La risposta è `202 Accepted` per indicare che la richiesta è stata presa in carico ed elaborata con successo.
       requestBody:
-        description: Dati dell'evento di incidente.
+        description: Dati dell'evento di incidente inviati dal dispositivo telematico.
         required: true
         content:
           application/json:
@@ -34,7 +30,7 @@ paths:
               $ref: '#/components/schemas/CrashReportPayload'
       responses:
         '202':
-          description: "Evento accettato, elaborato e registrato con successo."
+          description: Evento accettato, elaborato e registrato con successo.
           content:
             application/json:
               schema:
@@ -43,19 +39,31 @@ paths:
                   eventId:
                     type: integer
                     format: int64
+                    description: "L'ID univoco generato dal database per questo record di log."
                   status:
                     type: string
                     example: "PROCESSED_AND_LOGGED"
-  # --- 2. Percorso per la ricerca degli eventi critici ---
+        '400':
+          description: Dati di input non validi (es. campi obbligatori mancanti).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Errore interno del server durante l'elaborazione o il salvataggio.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /events/critical-reports:
-    get: # Il metodo HTTP per questo percorso
+    get:
       tags:
         - Event Reporting
-      summary: Recupera tutti i report di incidenti critici
+      summary: Recupera tutti gli eventi con gravità CRITICAL
       description: |-
-        Restituisce una lista di tutti i record di log dove la `severity` è "CRITICAL".
-        Il campo `jsonData` di ogni record conterrà il payload arricchito, 
-        includendo l'array `processingActions` se l'evento è stato processato da questo servizio.
+        Restituisce una lista di tutti i record di log dove la gravità dell'incidente (`jsonData.originalPayload.severity`) è "CRITICAL".
+        La query viene eseguita direttamente sul campo JSONB nel database.
       responses:
         '200':
           description: Una lista di record di eventi critici. La lista può essere vuota.
@@ -65,49 +73,29 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/EventLogRecord'
-        '400':
-          description: |-
-            Richiesta non valida. Questo può accadere se:
-            - Il corpo della richiesta non è un JSON valido.
-            - Mancano campi obbligatori (es. `deviceId`, `severity`).
-            - Un campo ha un tipo di dato errato (es. `gForce` non è un numero).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                timestamp: "2023-10-27T10:00:00.123Z"
-                status: 400
-                error: "Bad Request"
-                message: "Validation failed for object='crashReportPayload'. Error count: 1"
-                path: "/api/v1/events/crash-report"
         '500':
-          description: Errore interno del server durante l'elaborazione o il salvataggio dell'evento.
+          description: Errore interno del server.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
   /events/logs:
     delete:
       tags:
-        - Log Management (Developer Tools)
-      summary: (DEV) Elimina i log per un utente specifico
-      description: |-
-        **Endpoint di utilità per sviluppatori.**
-        Esegue un'operazione di pulizia di massa. Elimina TUTTE le righe dalla tabella dei log
-        che corrispondono al valore del campo 'user' specificato.
-        Utile per rimuovere i dati generati durante i test.
+        - Log Management
+      summary: Elimina tutti i log per un utente specifico
+      description: Elimina tutti i record di log dal database che corrispondono al parametro `user`. Operazione potenzialmente distruttiva.
       parameters:
         - name: user
           in: query
           required: true
-          description: L'identificativo dell'utente per cui eliminare i log.
+          description: L'identificativo dell'utente per cui eliminare i log (es. 'nicola_filannino').
           schema:
             type: string
-          example: "mario_rossi"
       responses:
         '200':
-          description: Operazione completata. Restituisce il numero di righe eliminate.
+          description: Operazione di eliminazione completata.
           content:
             application/json:
               schema:
@@ -115,54 +103,55 @@ paths:
                 properties:
                   user:
                     type: string
+                    description: L'utente per cui sono stati eliminati i log.
                   deletedCount:
                     type: integer
+                    description: Il numero di record eliminati.
         '400':
           description: Il parametro di query 'user' è mancante o vuoto.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                timestamp: "2023-10-27T10:00:00.123Z"
-                status: 400
-                error: "Bad Request"
-                message: "Required request parameter 'user' for method parameter type String is not present"
-                path: "/api/v1/events/logs"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Il parametro 'user' non può essere vuoto."
         '500':
-          description: Errore interno del server durante la ricerca dei dati nel database.
+          description: Errore interno del server.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-      # --- Esempio di codice per gli sviluppatori ---
-      x-codeSamples:
-        - lang: "bash"
-          label: "Esempio cURL"
-          source: |
-            curl -X DELETE "http://localhost:8080/api/v1/events/logs?user=mario_rossi"
 
-# --- Sezione dei componenti (schemi riutilizzabili) ---
 components:
   schemas:
+    # Schema per il payload in input, basato su CrashReportPayload.java
     CrashReportPayload:
       type: object
+      description: Rappresenta i dati grezzi inviati da un dispositivo telematico a seguito di un incidente.
+      required:
+        - deviceId
+        - eventTimestamp
+        - location
+        - severity
       properties:
         deviceId:
           type: string
-          description: ID univoco del dispositivo telematico che ha inviato l'evento.
-          example: "DEV-789012"
+          description: ID univoco del dispositivo telematico.
+          example: "DEV-ABC-123"
         vehicleLicensePlate:
           type: string
-          description: Targa del veicolo coinvolto.
+          description: Targa del veicolo (opzionale).
           example: "GA123BC"
         eventTimestamp:
           type: string
           format: date-time
-          description: Data e ora UTC dell'incidente (formato ISO 8601).
-          example: "2024-05-21T14:35:10Z"
+          description: Data e ora UTC dell'incidente (formato ISO 8601 con offset).
+          example: "2024-05-23T10:30:00Z"
         location:
           type: object
+          description: Coordinate geografiche dell'incidente.
           properties:
             latitude:
               type: number
@@ -175,20 +164,16 @@ components:
             longitude: 9.1900
         severity:
           type: string
-          enum: [LOW, MEDIUM, HIGH, CRITICAL]
           description: Gravità stimata dell'impatto.
+          enum: [LOW, MEDIUM, HIGH, CRITICAL, UNKNOWN]
           example: "HIGH"
         gForce:
           type: number
-          format: float
-          description: Forza G massima registrata durante l'impatto.
+          format: double
+          description: Forza G massima registrata (opzionale).
           example: 5.2
-      required:
-        - deviceId
-        - eventTimestamp
-        - location
-        - severity
 
+    # Schema per un singolo record di log, basato su EventLogRecord.java
     EventLogRecord:
       type: object
       description: Rappresenta un singolo record di log come restituito dal database.
@@ -198,56 +183,81 @@ components:
           format: int64
         user:
           type: string
+          example: "nicola_filannino"
         receivedAt:
           type: string
           format: date-time
-          description: Il timestamp dell'evento, estratto dal payload JSON.
+          description: Timestamp dell'evento estratto dal payload originale per convenienza.
         jsonData:
+          $ref: '#/components/schemas/FullLogEntry'
+
+    # Schema che descrive la struttura completa salvata nella colonna 'json'
+    FullLogEntry:
+      type: object
+      description: La struttura completa dell'oggetto salvato nella colonna JSONB, che include i dati originali e quelli di arricchimento.
+      properties:
+        audit:
           type: object
-          description: |-
-            L'intero payload JSON che è stato salvato. Se processato da questo servizio,
-            conterrà i campi del payload originale più due campi aggiuntivi:
-            - `processingTimestamp`: Data e ora dell'elaborazione.
-            - `processingActions`: Un array di oggetti che descrivono le azioni intraprese.
-          additionalProperties: true
-        # --- Aggiungiamo uno schema per descrivere una singola azione ---
-        ProcessingAction:
-          type: object
-          description: Descrive una singola azione intrapresa dal sistema in risposta a un evento.
           properties:
-            actionType:
-              type: string
-              description: Il tipo di azione eseguita.
-              example: "DISPATCH_AMBULANCE"
-            target:
-              type: string
-              description: L'obiettivo dell'azione.
-              example: "event_location"
-            timestamp:
+            receivedAt:
               type: string
               format: date-time
-              description: Il timestamp in cui l'azione è stata eseguita.
-            details:
+              description: Timestamp di quando il server ha ricevuto l'evento.
+        originalPayload:
+          $ref: '#/components/schemas/CrashReportPayload'
+        processing:
+          type: object
+          properties:
+            status:
               type: string
-              description: Una descrizione testuale dell'azione.
-              example: "Simulazione invio AMBULANZA alle coordinate: Lat 45.4642, Lon 9.19"
+              example: "COMPLETED"
+            completedAt:
+              type: string
+              format: date-time
+              description: Timestamp di quando il server ha finito di elaborare l'evento.
+            actions:
+              type: array
+              items:
+                $ref: '#/components/schemas/ProcessingAction'
 
-  ErrorResponse:
-    type: object
-    properties:
-      timestamp:
-        type: string
-        format: date-time
-        description: Il timestamp in cui si è verificato l'errore.
-      status:
-        type: integer
-        description: Il codice di stato HTTP.
-      error:
-        type: string
-        description: Una breve descrizione dello stato HTTP (es. "Bad Request").
-      message:
-        type: string
-        description: Un messaggio leggibile che descrive l'errore.
-      path:
-        type: string
-        description: Il percorso dell'API che è stato chiamato.
+    # Schema per una singola azione di emergenza
+    ProcessingAction:
+      type: object
+      description: Descrive una singola azione intrapresa dal sistema di dispatch.
+      properties:
+        actionType:
+          type: string
+          description: Il tipo di azione eseguita.
+          example: "DISPATCH_AMBULANCE"
+        target:
+          type: string
+          description: L'obiettivo dell'azione.
+          example: "event_location"
+        timestamp:
+          type: string
+          format: date-time
+          description: Il timestamp esatto in cui l'azione è stata eseguita.
+        details:
+          type: string
+          description: Una descrizione testuale dell'azione.
+          example: "Simulazione invio AMBULANZA alle coordinate: Lat 45.4642, Lon 9.1900"
+
+    # Schema per le risposte di errore, basato su GlobalExceptionHandler.java
+    ErrorResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+          example: 500
+        error:
+          type: string
+          example: "Internal Server Error"
+        message:
+          type: string
+          example: "Si è verificato un errore imprevisto."
+        path:
+          type: string
+          example: "/events/crash-report"

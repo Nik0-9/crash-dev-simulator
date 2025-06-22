@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/v1/events")
@@ -27,7 +28,7 @@ public class EventController {
     private final ObjectMapper objectMapper; // Inietta l'ObjectMapper per la conversione
 
     @PostMapping("/crash-report")
-    public ResponseEntity<Map<String, Object>> handleCrashReport(@RequestBody CrashReportPayload payload) {
+    public ResponseEntity<Map<String, Object>> handleCrashReport(@Valid @RequestBody CrashReportPayload payload) {
         log.info("Inizio elaborazione evento per dispositivo: {}", payload.getDeviceId());
 
         // 1. Dati di Audit
@@ -66,10 +67,20 @@ public class EventController {
         return ResponseEntity.ok(criticalEvents);
     }
 
+    @GetMapping("/reports-of-deviceId")
+    public ResponseEntity<List<EventLogRecord>> getReportsByDeviceId(@RequestParam("deviceId") String deviceId) {
+        if (deviceId == null || deviceId.isBlank()) {
+            throw new IllegalArgumentException("Il parametro 'deviceId' non può essere vuoto.");
+        }
+
+        List<EventLogRecord> reports = loggingService.findEventsByDeviceId(deviceId);
+        return ResponseEntity.ok(reports);
+    }
+
     @DeleteMapping("/logs")
     public ResponseEntity<Map<String, Object>> deleteUserLogs(@RequestParam("user") String user) {
         if (user == null || user.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Il parametro 'user' non può essere vuoto."));
+            throw new IllegalArgumentException("Il parametro 'user' non può essere vuoto.");
         }
 
         int deletedCount = loggingService.deleteLogsByUser(user);
